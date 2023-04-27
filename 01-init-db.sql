@@ -1,0 +1,8 @@
+-- CREATE TABLE
+DROP TABLE IF EXISTS books;
+CREATE TABLE books (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  author TEXT NOT NULL,
+  quantity INTEGER NOT NULL
+);
