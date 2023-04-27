@@ -1,10 +1,17 @@
 package main
 
 import (
+	"database/sql"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
 )
+
+// DB holds the database connection
+var DB *sql.DB
+
 
 // Book represents a book object
 type book struct {
@@ -14,35 +21,48 @@ type book struct {
 	Quantity 	int 	`json:"quantity"`
 }
 
-// Mock database (temporary)
-var books []book = []book{
-	{ID: "1", Title: "The Alchemist", Author: "Paulo Coelho", Quantity: 10},
-	{ID: "2", Title: "The Monk Who Sold His Ferrari", Author: "Robin Sharma", Quantity: 5},
-	{ID: "3", Title: "The Secret", Author: "Rhonda Byrne", Quantity: 7},
-	{ID: "4", Title: "The Power of Your Subconscious Mind", Author: "Joseph Murphy", Quantity: 3},
-	{ID: "5", Title: "The Power of Now", Author: "Eckhart Tolle", Quantity: 2},
-}
-
 // Returns a list of all books
 func getBooks(c *gin.Context) {
+	rows, err := DB.Query("SELECT id, title, author, quantity FROM books")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var books []book
+	for rows.Next() {
+		var b book
+		err := rows.Scan(&b.ID, &b.Title, &b.Author, &b.Quantity)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		books = append(books, b)
+	}
+
 	c.JSON(http.StatusOK, books)
 }
 
-// Returns a single book by ID
 func getBook(c *gin.Context) {
-	id := c.Param("id")
-
-	for _, b := range books {
-		if b.ID == id {
-			c.JSON(http.StatusOK, b)
-			return
-		}
-	}
-
-	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+    id := c.Param("id")
+    
+    var b book
+    
+    err := DB.QueryRow("SELECT id, title, author, quantity FROM books WHERE id=$1", id).Scan(&b.ID, &b.Title, &b.Author, &b.Quantity)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+            return
+        }
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    
+    c.JSON(http.StatusOK, b)
 }
 
-// Creates a new book and adds it to the books slice (temporary)
+// Creates a new book and adds it to the database
 func addBook(c *gin.Context) {
 	var newBook book
 
@@ -51,26 +71,65 @@ func addBook(c *gin.Context) {
 		return
 	}
 
-	books = append(books, newBook)
+	sqlStatement := `INSERT INTO books (id, title, author, quantity) VALUES ($1, $2, $3, $4)`
+	_, err := DB.Exec(sqlStatement, newBook.ID, newBook.Title, newBook.Author, newBook.Quantity)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusCreated, newBook)
 }
 
-// Deletes a book from the books slice (temporary)
+func viewAllTables(c *gin.Context) {
+	rows, err := DB.Query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		err := rows.Scan(&tableName)
+		if err != nil {
+			panic(err)
+		}
+		tables = append(tables, tableName)
+	}
+	
+	if err = rows.Err(); err != nil {
+		panic(err)
+	}
+	
+	fmt.Println(tables)
+}
+
+// Deletes a book from the database
 func deleteBook(c *gin.Context) {
 	id := c.Param("id")
 
-	for i, b := range books {
-		if b.ID == id {
-			books = append(books[:i], books[i+1:]...)
-			c.JSON(http.StatusOK, gin.H{"message": "Book deleted"})
-			return
-		}
+	// Delete book from the database
+	res, err := DB.Exec("DELETE FROM books WHERE id=$1", id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Book deleted"})
 }
 
-// Updates a book from the books slice (temporary)
 func updateBook(c *gin.Context) {
 	id := c.Param("id")
 
@@ -80,28 +139,48 @@ func updateBook(c *gin.Context) {
 		return
 	}
 
-	for i, b := range books {
-		if b.ID == id {
-			books[i].Title = updatedBook.Title
-			books[i].Author = updatedBook.Author
-			books[i].Quantity = updatedBook.Quantity
-			c.JSON(http.StatusOK, books[i])
+	var b book
+	row := DB.QueryRow("SELECT id, title, author, quantity FROM books WHERE id = $1", id)
+	err := row.Scan(&b.ID, &b.Title, &b.Author, &b.Quantity)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
 			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+	b.Title = updatedBook.Title
+	b.Author = updatedBook.Author
+	b.Quantity = updatedBook.Quantity
+
+	_, err = DB.Exec("UPDATE books SET title=$1, author=$2, quantity=$3 WHERE id=$4", b.Title, b.Author, b.Quantity, b.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, b)
 }
 
-
 func main() {
+	
 	router := gin.Default()
+	dsn := "postgres://gouser:admingres@localhost:5432/godb?sslmode=disable"
 
+	var err error
+	DB, err = sql.Open("postgres", dsn)
+	if err != nil {
+		panic(err)
+	}
+
+	router.GET("/tables", viewAllTables)
 	router.GET("/books", getBooks)
 	router.GET("/books/:id", getBook)
 	router.POST("/books", addBook)
 	router.PUT("/books/:id", updateBook)
 	router.DELETE("/books/:id", deleteBook)
 
-	router.Run( "localhost:8080")
+	router.Run( "localhost:8081")
 }
