@@ -2,7 +2,7 @@
 
 A very simple api written in go.
 It uses a postgres db to store books.
-Uses gin web framework to deal with http requests.
+Uses chi web framework to deal with http requests.
 
 # Docker
 To run the postgres db you will need docker and to create a new volume
